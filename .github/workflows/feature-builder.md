@@ -34,7 +34,7 @@ concurrency:
   job-discriminator: ${{ github.event.issue.number || inputs.item_number }}
 jobs:
   activation:
-    steps:
+    pre-steps:
       - name: Validate issue number and required secrets
         uses: actions/github-script@v9
         env:
@@ -50,6 +50,12 @@ jobs:
             if (process.env.COPILOT_TOKEN_PRESENT !== 'true' || process.env.PUBLICATION_TOKEN_PRESENT !== 'true') {
               core.setFailed('Configure COPILOT_GITHUB_TOKEN for inference and GH_AW_GITHUB_TOKEN for pull request publication before running Feature Builder.');
             }
+      - name: Checkout workflow source for prompt interpolation
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/workflows
 tools:
   edit:
   github:
