@@ -28,6 +28,7 @@ function readValidationScript(source) {
 
   assert.match(step, /COPILOT_TOKEN_PRESENT: \$\{\{ secrets\.COPILOT_GITHUB_TOKEN != '' \}\}/);
   assert.match(step, /PUBLICATION_TOKEN_PRESENT: \$\{\{ secrets\.GH_AW_GITHUB_TOKEN != '' \}\}/);
+  assert.match(step, /PUBLICATION_TOKEN: \$\{\{ secrets\.GH_AW_GITHUB_TOKEN \}\}/);
   return script;
 }
 
@@ -38,19 +39,63 @@ function readLabelRemovalScript(source) {
   return script;
 }
 
+const canWrite = { push: 200, issues: 422, pulls: 422 };
+
 // Runs the inline github-script body the same way actions/github-script wraps it.
 // `issues` maps an issue number to its REST data, or to an HTTP status the lookup fails with;
 // unlisted numbers are open issues. `openIssues` is what the open-issue query returns.
+// `access` is the HTTP status GH_AW_GITHUB_TOKEN gets from each write probe, or an Error the probe throws.
 async function validate(script, payload, {
   copilot = 'true',
   publication = 'true',
   issues = {},
   openIssues = [],
-  listError
+  listError,
+  access = canWrite
 } = {}) {
   const failures = [];
   const warnings = [];
   const lookups = [];
+  const probes = [];
+  const respond = (name) => {
+    const status = access[name];
+    if (status instanceof Error) {
+      throw status;
+    }
+    return status;
+  };
+  // Octokit resolves 2xx responses and throws the others, like actions/github-script's client.
+  const octokitResponse = (name) => {
+    const status = respond(name);
+    if (status >= 400) {
+      throw Object.assign(new Error(`HTTP ${status}`), { status });
+    }
+    return { status };
+  };
+  const getOctokit = (token) => {
+    assert.equal(token, 'publication-token', 'Probes must use GH_AW_GITHUB_TOKEN');
+    return {
+      rest: {
+        issues: {
+          create: async (params) => {
+            probes.push(['issues', params]);
+            return octokitResponse('issues');
+          }
+        },
+        pulls: {
+          create: async (params) => {
+            probes.push(['pulls', params]);
+            return octokitResponse('pulls');
+          }
+        }
+      }
+    };
+  };
+  // fetch resolves every HTTP status and only throws on network errors.
+  const fetch = async (url, { headers }) => {
+    probes.push(['push', url, Buffer.from(headers.authorization.replace(/^Basic /, ''), 'base64').toString()]);
+    return { status: respond('push') };
+  };
   const github = {
     rest: {
       issues: {
@@ -74,12 +119,21 @@ async function validate(script, payload, {
     }
   };
   await runInNewContext(`(async () => {\n${script}\n})()`, {
-    context: { payload, repo: { owner: 'contoso', repo: 'order-desk' } },
+    context: { payload, repo: { owner: 'contoso', repo: 'order-desk' }, serverUrl: 'https://github.com' },
     core: { setFailed: (message) => failures.push(message), warning: (message) => warnings.push(message) },
     github,
-    process: { env: { COPILOT_TOKEN_PRESENT: copilot, PUBLICATION_TOKEN_PRESENT: publication } }
+    getOctokit,
+    fetch,
+    Buffer,
+    process: {
+      env: {
+        COPILOT_TOKEN_PRESENT: copilot,
+        PUBLICATION_TOKEN_PRESENT: publication,
+        PUBLICATION_TOKEN: publication === 'true' ? 'publication-token' : ''
+      }
+    }
   });
-  return { failures, warnings, lookups };
+  return { failures, warnings, lookups, probes };
 }
 
 // Runs the inline label removal script; `status` is the HTTP status the removal fails with, if any.
@@ -155,13 +209,15 @@ test('compiled activation validates prerequisites before any other activation wo
 
 test('activation validation accepts open issues from label events and manual runs', async () => {
   for (const script of await readValidationScripts()) {
+    const label = await validate(script, { issue: { number: 42, state: 'open' } });
     assert.deepEqual(
-      await validate(script, { issue: { number: 42, state: 'open' } }),
+      { failures: label.failures, warnings: label.warnings, lookups: label.lookups },
       { failures: [], warnings: [], lookups: [] },
       'A label event already carries the issue'
     );
+    const manual = await validate(script, { inputs: { item_number: '42' } });
     assert.deepEqual(
-      await validate(script, { inputs: { item_number: '42' } }),
+      { failures: manual.failures, warnings: manual.warnings, lookups: manual.lookups },
       { failures: [], warnings: [], lookups: ['contoso/order-desk#42'] }
     );
     assert.deepEqual((await validate(script, { inputs: { item_number: '9007199254740991' } })).failures, []);
@@ -280,6 +336,73 @@ test('activation validation reports an empty manual issue number and a missing s
     assert.equal(failures.length, 2);
     assert.match(failures[0], /^item_number is empty/);
     assert.match(failures[1], /GH_AW_GITHUB_TOKEN for pull request publication/);
+  }
+});
+
+test('activation validation probes GH_AW_GITHUB_TOKEN write access without writing', async () => {
+  for (const script of await readValidationScripts()) {
+    const { failures, warnings, probes } = await validate(script, { inputs: { item_number: '42' } });
+
+    assert.deepEqual([failures, warnings], [[], []]);
+    assert.deepEqual(JSON.parse(JSON.stringify(probes)), [
+      ['push', 'https://github.com/contoso/order-desk.git/info/refs?service=git-receive-pack', 'x-access-token:publication-token'],
+      ['issues', { owner: 'contoso', repo: 'order-desk', title: '' }],
+      ['pulls', { owner: 'contoso', repo: 'order-desk', title: '', head: '', base: '' }]
+    ], 'Probes must be requests GitHub rejects as invalid, so nothing is created');
+
+    const missing = await validate(script, { inputs: { item_number: '42' } }, { publication: 'false' });
+    assert.deepEqual(missing.probes, [], 'A missing token is reported without probing');
+  }
+});
+
+test('activation validation stops a token that cannot write before the agent runs', async () => {
+  // Reproduces run 41687886199: safe_outputs got 403 on git push, create ref and add comment after the agent ran.
+  for (const script of await readValidationScripts()) {
+    const readOnly = await validate(script, { inputs: { item_number: '10' } }, { access: { push: 403, issues: 403, pulls: 403 } });
+    assert.equal(readOnly.failures.length, 1);
+    assert.match(
+      readOnly.failures[0],
+      /^GH_AW_GITHUB_TOKEN cannot write to contoso\/order-desk \(Contents, Issues, Pull requests: Read and write missing\), so pull request publication would fail\. /
+    );
+    assert.match(readOnly.failures[0], /repository access includes contoso\/order-desk and Contents, Issues and Pull requests are Read and write/);
+    assert.match(readOnly.failures[0], /update the GH_AW_GITHUB_TOKEN secret and start a new run\.$/);
+    assert.doesNotMatch(readOnly.failures[0], /publication-token/, 'The token value must never be reported');
+    assert.deepEqual(readOnly.warnings, []);
+
+    const contentsOnly = await validate(script, { inputs: { item_number: '10' } }, { access: { ...canWrite, push: 403 } });
+    assert.match(contentsOnly.failures[0], /\(Contents: Read and write missing\)/);
+
+    const notSelected = await validate(script, { inputs: { item_number: '10' } }, { access: { push: 404, issues: 404, pulls: 404 } });
+    assert.match(notSelected.failures[0], /\(Contents, Issues, Pull requests: Read and write missing\)/, 'A private repository answers 404');
+
+    const expired = await validate(script, { inputs: { item_number: '10' } }, { access: { push: 401, issues: 401, pulls: 401 } });
+    assert.equal(expired.failures.length, 1);
+    assert.match(expired.failures[0], /^GH_AW_GITHUB_TOKEN is invalid or expired, so pull request publication would fail\. Edit the token/);
+  }
+});
+
+test('activation validation reports a token without write access with other problems', async () => {
+  for (const script of await readValidationScripts()) {
+    const { failures } = await validate(script, {}, { copilot: 'false', access: { push: 403, issues: 403, pulls: 403 } });
+
+    assert.equal(failures.length, 3);
+    assert.match(failures[0], /^item_number is empty/);
+    assert.match(failures[1], /COPILOT_GITHUB_TOKEN for inference/);
+    assert.match(failures[2], /^GH_AW_GITHUB_TOKEN cannot write/);
+  }
+});
+
+test('activation validation leaves the write check to safe outputs when GitHub cannot answer', async () => {
+  for (const script of await readValidationScripts()) {
+    const { failures, warnings } = await validate(script, { inputs: { item_number: '42' } }, {
+      access: { push: new Error('fetch failed'), issues: 502, pulls: 422 }
+    });
+
+    assert.deepEqual(failures, []);
+    assert.deepEqual(warnings, [
+      'Could not check GH_AW_GITHUB_TOKEN Contents write access (fetch failed), so safe outputs checks it when publishing.',
+      'Could not check GH_AW_GITHUB_TOKEN Issues write access (502), so safe outputs checks it when publishing.'
+    ]);
   }
 });
 

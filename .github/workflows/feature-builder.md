@@ -53,6 +53,7 @@ jobs:
         env:
           COPILOT_TOKEN_PRESENT: ${{ secrets.COPILOT_GITHUB_TOKEN != '' }}
           PUBLICATION_TOKEN_PRESENT: ${{ secrets.GH_AW_GITHUB_TOKEN != '' }}
+          PUBLICATION_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -112,6 +113,44 @@ jobs:
                 `Configure the repository Actions secret${missingSecrets.length > 1 ? 's' : ''} ${missingSecrets.join(' and ')} ` +
                 '(Settings > Secrets and variables > Actions) before running Feature Builder.'
               );
+            }
+            // safe_outputs publishes with GH_AW_GITHUB_TOKEN only after the agent has run, so check its write access now.
+            // Each probe is a request GitHub authorizes before rejecting it as invalid, so nothing is written:
+            // write access answers 200 (git receive-pack) or 422, and a token without it answers 403 (404 if private).
+            if (process.env.PUBLICATION_TOKEN_PRESENT === 'true') {
+              const token = process.env.PUBLICATION_TOKEN;
+              const publisher = getOctokit(token);
+              const statusOf = async (request) => {
+                try {
+                  return (await request()).status;
+                } catch (error) {
+                  return error.status ?? error.message;
+                }
+              };
+              const checks = [
+                ['Contents', 200, await statusOf(() => fetch(`${context.serverUrl}/${owner}/${repo}.git/info/refs?service=git-receive-pack`, {
+                  headers: { authorization: `Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}` }
+                }))],
+                ['Issues', 422, await statusOf(() => publisher.rest.issues.create({ owner, repo, title: '' }))],
+                ['Pull requests', 422, await statusOf(() => publisher.rest.pulls.create({ owner, repo, title: '', head: '', base: '' }))]
+              ];
+              const fix = 'Edit the token (Settings > Developer settings > Personal access tokens) so its repository access ' +
+                `includes ${owner}/${repo} and Contents, Issues and Pull requests are Read and write, or create a token ` +
+                'with those permissions, then update the GH_AW_GITHUB_TOKEN secret and start a new run.';
+              const denied = checks.filter(([, , status]) => status === 403 || status === 404).map(([permission]) => permission);
+              if (checks.some(([, , status]) => status === 401)) {
+                core.setFailed(`GH_AW_GITHUB_TOKEN is invalid or expired, so pull request publication would fail. ${fix}`);
+              } else if (denied.length > 0) {
+                core.setFailed(
+                  `GH_AW_GITHUB_TOKEN cannot write to ${owner}/${repo} (${denied.join(', ')}: Read and write missing), ` +
+                  `so pull request publication would fail. ${fix}`
+                );
+              }
+              for (const [permission, expected, status] of checks) {
+                if (![expected, 401, 403, 404].includes(status)) {
+                  core.warning(`Could not check GH_AW_GITHUB_TOKEN ${permission} write access (${status}), so safe outputs checks it when publishing.`);
+                }
+              }
             }
       # Once the checks pass, remove agent-build so applying it again starts another build.
       # Like gh-aw's label_command, a label that is already gone or cannot be removed does not stop the build.
