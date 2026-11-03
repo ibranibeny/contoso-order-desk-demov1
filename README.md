@@ -95,6 +95,10 @@ Secret scanning alerts need the optional repository secret `SECRET_SCANNING_TOKE
 
 ### Feature Builder activation troubleshooting
 
+Before running Feature Builder, configure both repository Actions secrets: `COPILOT_GITHUB_TOKEN` for inference (as above) and `GH_AW_GITHUB_TOKEN`, a repository-scoped personal access token with **Contents, Issues and Pull requests: Read and write** for publication. Publication uses a separate token so the resulting pull request triggers the normal checks; do not replace it with `GITHUB_TOKEN`.
+
+For a manual run, supply the positive decimal feature issue number in `item_number`, or apply `agent-build` to the feature issue instead. The dispatch form cannot mark this field required while `label_command` is enabled, but an empty or invalid number fails activation before prompt rendering. Validation reports missing secrets as well, even when the issue number is invalid. Configure the secrets and start a new run with an issue number; retrying the same run preserves its missing input.
+
 Feature Builder imports [its workflow source](.github/workflows/feature-builder.md) while rendering the prompt. Its activation checkout must stay in `jobs.activation.pre-steps`, before prompt interpolation; `jobs.activation.steps` runs too late. Keep the generated `.lock.yml` in sync with `gh aw compile feature-builder`.
 
 If an older run failed with `Runtime import file not found`, use **Actions → Feature Builder → Run workflow** on `main` after the checkout fix is merged, and supply the feature issue's `item_number`. **Re-run jobs** uses the original run's commit, so it does not pick up a newly merged workflow fix.

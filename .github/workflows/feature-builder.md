@@ -7,8 +7,13 @@ on:
     name: agent-build
     events: [issues]
     remove_label: true
-  # gh-aw supplies the item_number dispatch input; activation requires a valid issue number.
   workflow_dispatch:
+    inputs:
+      item_number:
+        description: 'Required for manual runs: positive decimal feature issue number'
+        # label_command dispatches automatically, so gh-aw requires this to be optional here.
+        required: false
+        type: string
   roles: [admin, maintainer, write]
   reaction: none
   status-comment: false
@@ -36,14 +41,6 @@ jobs:
   activation:
     # action-tag skips gh-aw's automatic activation checkout, but runtime imports still need the source.
     pre-steps:
-      - name: Checkout workflow source for runtime imports
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.workflow_sha }}
-          sparse-checkout: .github/workflows
-          persist-credentials: false
-          token: ${{ secrets.GITHUB_TOKEN }}
-    steps:
       - name: Validate issue number and required secrets
         uses: actions/github-script@v9
         env:
@@ -54,11 +51,17 @@ jobs:
             const issueNumber = String(context.payload.issue?.number ?? context.payload.inputs?.item_number ?? '');
             if (!/^[1-9]\d*$/.test(issueNumber) || !Number.isSafeInteger(Number(issueNumber))) {
               core.setFailed('item_number must be a positive decimal integer identifying a feature issue.');
-              return;
             }
             if (process.env.COPILOT_TOKEN_PRESENT !== 'true' || process.env.PUBLICATION_TOKEN_PRESENT !== 'true') {
               core.setFailed('Configure COPILOT_GITHUB_TOKEN for inference and GH_AW_GITHUB_TOKEN for pull request publication before running Feature Builder.');
             }
+      - name: Checkout workflow source for runtime imports
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: .github/workflows
+          persist-credentials: false
+          token: ${{ secrets.GITHUB_TOKEN }}
 tools:
   edit:
   github:
