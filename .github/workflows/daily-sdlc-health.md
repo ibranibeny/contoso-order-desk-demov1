@@ -6,7 +6,7 @@ on:
   schedule: daily around 7am utc+7
   workflow_dispatch:
 # Copies made from this template skip the check. To run it in a copy, put your repository here and recompile.
-if: github.repository == 'ibranibeny/contoso-order-desk'
+if: github.repository == 'ibranibeny/contoso-order-desk-demov1'
 permissions:
   contents: read
   issues: read
