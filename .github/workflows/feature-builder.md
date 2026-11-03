@@ -3,14 +3,18 @@ name: Feature Builder
 description: Build an approved feature issue with tests and open a pull request for normal code review, GHAS and CI/CD
 intent: Deliver approved features without manual coding while preserving data protection and the repository's review and security gates.
 on:
-  label_command:
-    name: agent-build
-    events: [issues]
-    remove_label: true
-  # gh-aw supplies an optional item_number dispatch input; activation pre-steps require a valid issue number.
-  # Do not declare inputs here: label_command rejects required: true, and explicit inputs compile to an
-  # invalid workflow_dispatch "types" key.
+  # A labeled trigger rather than gh-aw's label_command: label_command forces item_number to be optional
+  # (required: true fails to compile, and declared inputs compile to an invalid workflow_dispatch "types" key),
+  # so Run workflow could start without an issue. The "Remove trigger label" pre-step keeps the label one-shot.
+  issues:
+    types: [labeled]
+    names: [agent-build]
   workflow_dispatch:
+    inputs:
+      item_number:
+        description: Feature issue number to build (digits only, for example 10)
+        required: true
+        type: string
   roles: [admin, maintainer, write]
   reaction: none
   status-comment: false
@@ -36,10 +40,14 @@ concurrency:
   job-discriminator: ${{ github.event.issue.number || inputs.item_number }}
 jobs:
   activation:
+    # Lets the "Remove trigger label" pre-step remove agent-build from the issue.
+    permissions:
+      issues: write
     pre-steps:
-      # Fail fast, before gh-aw removes the trigger label, checks AI credits or renders the prompt.
+      # Fail fast, before the trigger label is removed and before gh-aw checks AI credits or renders the prompt.
       # Report every missing prerequisite at once so a single fix makes the next run start.
-      # A manual run must name an open issue; when it does not, list the open issues to choose from.
+      # A run must name an open issue; when it does not (an empty value sent through the API, or a re-run
+      # of a run started before item_number was required), list the open issues to choose from.
       - name: Validate issue number and required secrets
         uses: actions/github-script@v9
         env:
@@ -104,6 +112,25 @@ jobs:
                 `Configure the repository Actions secret${missingSecrets.length > 1 ? 's' : ''} ${missingSecrets.join(' and ')} ` +
                 '(Settings > Secrets and variables > Actions) before running Feature Builder.'
               );
+            }
+      # Once the checks pass, remove agent-build so applying it again starts another build.
+      # Like gh-aw's label_command, a label that is already gone or cannot be removed does not stop the build.
+      - name: Remove trigger label
+        if: github.event_name == 'issues'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const { issue, label } = context.payload;
+            try {
+              await github.rest.issues.removeLabel({ owner, repo, issue_number: issue.number, name: label.name });
+              core.info(`Removed ${label.name} from #${issue.number}: apply it again to start another build.`);
+            } catch (error) {
+              if (error.status === 404) {
+                core.info(`${label.name} is no longer on #${issue.number}.`);
+              } else {
+                core.warning(`Could not remove ${label.name} from #${issue.number}: ${error.message}`);
+              }
             }
       # action-tag skips gh-aw's automatic activation checkout, but runtime imports still need the source.
       - name: Checkout workflow source for runtime imports
