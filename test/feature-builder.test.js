@@ -3,15 +3,16 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 
+const source = readFileSync(new URL('../.github/workflows/feature-builder.md', import.meta.url), 'utf8');
 const workflow = readFileSync(new URL('../.github/workflows/feature-builder.lock.yml', import.meta.url), 'utf8');
 const activation = workflow.match(/^  activation:\n([\s\S]*?)(?=^  \w+:)/m)[1];
 const validationName = '      - name: Validate issue number and required secrets';
-const checkoutName = '      - name: Checkout workflow source for prompt interpolation';
+const checkoutName = '      - name: Checkout workflow source for runtime imports';
 const interpolationName = '      - name: Interpolate variables and render templates';
 const validation = activation.slice(activation.indexOf(validationName), activation.indexOf(checkoutName));
 const script = validation.split('          script: |\n')[1].replace(/^            /gm, '');
 
-test('Feature Builder validates inputs and checks out its prompt source before interpolation', () => {
+test('Feature Builder validates inputs and checks out its workflow source before interpolation', () => {
   const validationIndex = activation.indexOf(validationName);
   const checkoutIndex = activation.indexOf(checkoutName);
   const interpolationIndex = activation.indexOf(interpolationName);
@@ -22,9 +23,21 @@ test('Feature Builder validates inputs and checks out its prompt source before i
   const checkout = activation.slice(checkoutIndex).split('\n      - name:')[0];
   assert.match(checkout, /uses: actions\/checkout@[a-f0-9]{40}\b/);
   assert.match(checkout, /persist-credentials: false/);
-  assert.match(checkout, /ref: \$\{\{ github.sha \}\}/);
+  assert.match(checkout, /ref: \$\{\{ github\.workflow_sha \}\}/);
   assert.match(checkout, /sparse-checkout: \.github\/workflows/);
+  assert.match(checkout, /token: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
   assert.match(activation, /\{\{#runtime-import \.github\/workflows\/feature-builder\.md\}\}/);
+});
+
+test('Feature Builder configures workflow-source checkout in activation pre-steps', () => {
+  const preSteps = source.match(/^ {4}pre-steps:\n([\s\S]*?)(?=^tools:)/m)?.[1];
+
+  assert.ok(preSteps, 'Activation needs pre-steps before prompt interpolation');
+  assert.match(preSteps, /name: Validate issue number and required secrets/);
+  assert.match(preSteps, /name: Checkout workflow source for runtime imports/);
+  assert.match(preSteps, /ref: \$\{\{ github\.workflow_sha \}\}/);
+  assert.match(preSteps, /sparse-checkout: \.github\/workflows/);
+  assert.match(preSteps, /persist-credentials: false/);
 });
 
 function validate(payload, env = { COPILOT_TOKEN_PRESENT: 'true', PUBLICATION_TOKEN_PRESENT: 'true' }) {

@@ -50,12 +50,13 @@ jobs:
             if (process.env.COPILOT_TOKEN_PRESENT !== 'true' || process.env.PUBLICATION_TOKEN_PRESENT !== 'true') {
               core.setFailed('Configure COPILOT_GITHUB_TOKEN for inference and GH_AW_GITHUB_TOKEN for pull request publication before running Feature Builder.');
             }
-      - name: Checkout workflow source for prompt interpolation
-        uses: actions/checkout@v7.0.1
+      - name: Checkout workflow source for runtime imports
+        uses: actions/checkout@v7
         with:
-          persist-credentials: false
-          ref: ${{ github.sha }}
+          ref: ${{ github.workflow_sha }}
           sparse-checkout: .github/workflows
+          persist-credentials: false
+          token: ${{ secrets.GITHUB_TOKEN }}
 tools:
   edit:
   github:
