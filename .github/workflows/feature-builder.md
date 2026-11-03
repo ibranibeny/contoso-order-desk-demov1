@@ -39,6 +39,7 @@ jobs:
     pre-steps:
       # Fail fast, before gh-aw removes the trigger label, checks AI credits or renders the prompt.
       # Report every missing prerequisite at once so a single fix makes the next run start.
+      # A manual run must name an open issue; when it does not, list the open issues to choose from.
       - name: Validate issue number and required secrets
         uses: actions/github-script@v9
         env:
@@ -46,13 +47,52 @@ jobs:
           PUBLICATION_TOKEN_PRESENT: ${{ secrets.GH_AW_GITHUB_TOKEN != '' }}
         with:
           script: |
+            const { owner, repo } = context.repo;
             const issueNumber = String(context.payload.issue?.number ?? context.payload.inputs?.item_number ?? '');
-            if (!/^[1-9]\d*$/.test(issueNumber) || !Number.isSafeInteger(Number(issueNumber))) {
+            let issueProblem = '';
+            if (issueNumber === '') {
+              issueProblem = 'item_number is empty';
+            } else if (!/^[1-9]\d*$/.test(issueNumber) || !Number.isSafeInteger(Number(issueNumber))) {
+              issueProblem = 'item_number is not a positive decimal integer';
+            } else {
+              let issue = context.payload.issue;
+              if (!issue) {
+                try {
+                  issue = (await github.rest.issues.get({ owner, repo, issue_number: Number(issueNumber) })).data;
+                } catch (error) {
+                  if (error.status === 404 || error.status === 410) {
+                    issueProblem = `#${issueNumber} was not found in ${owner}/${repo}`;
+                  } else {
+                    core.warning(`Could not check issue #${issueNumber}, so the agent checks it instead: ${error.message}`);
+                  }
+                }
+              }
+              if (issue?.pull_request) {
+                issueProblem = `#${issueNumber} is a pull request, not an issue`;
+              } else if (issue && issue.state !== 'open') {
+                issueProblem = `issue #${issueNumber} is closed`;
+              }
+            }
+            if (issueProblem) {
+              let openIssues = '';
+              try {
+                const { repository } = await github.graphql(
+                  'query($owner: String!, $repo: String!) { repository(owner: $owner, name: $repo) { ' +
+                  'issues(states: OPEN, first: 10, orderBy: { field: CREATED_AT, direction: DESC }) { totalCount nodes { number title } } } }',
+                  { owner, repo }
+                );
+                const { totalCount, nodes } = repository.issues;
+                const more = totalCount > nodes.length ? `; and ${totalCount - nodes.length} more` : '';
+                openIssues = totalCount === 0
+                  ? ' This repository has no open issues: create the feature issue first (Issues > New issue > Feature request).'
+                  : ` Open issues: ${nodes.map(({ number, title }) => `#${number} ${title}`).join('; ')}${more}.`;
+              } catch (error) {
+                core.warning(`Could not list open issues: ${error.message}`);
+              }
               core.setFailed(
-                `${issueNumber === '' ? 'item_number is empty' : 'item_number is not a positive decimal integer'}: ` +
-                'start a new run from Actions > Feature Builder > Run workflow with the feature issue number ' +
+                `${issueProblem}: start a new run from Actions > Feature Builder > Run workflow with the feature issue number ` +
                 '(digits only, for example 12), or apply the agent-build label to the issue. ' +
-                'Re-running this run reuses its inputs.'
+                `Re-running this run reuses its inputs.${openIssues}`
               );
             }
             const missingSecrets = [
