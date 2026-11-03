@@ -95,9 +95,11 @@ Secret scanning alerts need the optional repository secret `SECRET_SCANNING_TOKE
 
 ### Feature Builder activation troubleshooting
 
-Feature Builder imports [its workflow source](.github/workflows/feature-builder.md) while rendering the prompt. Its activation checkout must stay in `jobs.activation.pre-steps`, before prompt interpolation; `jobs.activation.steps` runs too late. Keep the generated `.lock.yml` in sync with `gh aw compile feature-builder`.
+Feature Builder needs two repository Actions secrets: `COPILOT_GITHUB_TOKEN` for inference (as above) and `GH_AW_GITHUB_TOKEN`, a repository-scoped personal access token with **Contents, Issues and Pull requests: Read and write** that publishes the pull request so the normal checks run. Start it by applying `agent-build` to a feature issue, or with **Actions → Feature Builder → Run workflow** and the issue number in `item_number`. gh-aw cannot mark `item_number` as required while the label command is enabled, so do not declare the input in the frontmatter: `required: true` fails to compile, and other declared inputs produce a `workflow_dispatch` key GitHub rejects.
 
-If an older run failed with `Runtime import file not found`, use **Actions → Feature Builder → Run workflow** on `main` after the checkout fix is merged, and supply the feature issue's `item_number`. **Re-run jobs** uses the original run's commit, so it does not pick up a newly merged workflow fix.
+The first activation pre-step checks the issue number and both secrets before the trigger label is removed or the prompt is rendered, and reports every missing prerequisite at once. Fix what it reports, then start a new run: **Re-run jobs** reuses the original run's inputs and commit, so it cannot pick up an issue number or a newly merged workflow fix. A label-triggered run that fails this check keeps `agent-build` on the issue; remove it and apply it again.
+
+Feature Builder imports [its workflow source](.github/workflows/feature-builder.md) while rendering the prompt. Its activation checkout must stay in `jobs.activation.pre-steps`, before prompt interpolation; `jobs.activation.steps` runs too late. Keep the generated `.lock.yml` in sync with `gh aw compile feature-builder`.
 
 ## What's inside
 

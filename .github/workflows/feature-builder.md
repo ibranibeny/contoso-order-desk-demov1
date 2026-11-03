@@ -7,7 +7,9 @@ on:
     name: agent-build
     events: [issues]
     remove_label: true
-  # gh-aw supplies the item_number dispatch input; activation requires a valid issue number.
+  # gh-aw supplies an optional item_number dispatch input; activation pre-steps require a valid issue number.
+  # Do not declare inputs here: label_command rejects required: true, and explicit inputs compile to an
+  # invalid workflow_dispatch "types" key.
   workflow_dispatch:
   roles: [admin, maintainer, write]
   reaction: none
@@ -34,16 +36,9 @@ concurrency:
   job-discriminator: ${{ github.event.issue.number || inputs.item_number }}
 jobs:
   activation:
-    # action-tag skips gh-aw's automatic activation checkout, but runtime imports still need the source.
     pre-steps:
-      - name: Checkout workflow source for runtime imports
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.workflow_sha }}
-          sparse-checkout: .github/workflows
-          persist-credentials: false
-          token: ${{ secrets.GITHUB_TOKEN }}
-    steps:
+      # Fail fast, before gh-aw removes the trigger label, checks AI credits or renders the prompt.
+      # Report every missing prerequisite at once so a single fix makes the next run start.
       - name: Validate issue number and required secrets
         uses: actions/github-script@v9
         env:
@@ -53,12 +48,31 @@ jobs:
           script: |
             const issueNumber = String(context.payload.issue?.number ?? context.payload.inputs?.item_number ?? '');
             if (!/^[1-9]\d*$/.test(issueNumber) || !Number.isSafeInteger(Number(issueNumber))) {
-              core.setFailed('item_number must be a positive decimal integer identifying a feature issue.');
-              return;
+              core.setFailed(
+                `${issueNumber === '' ? 'item_number is empty' : 'item_number is not a positive decimal integer'}: ` +
+                'start a new run from Actions > Feature Builder > Run workflow with the feature issue number ' +
+                '(digits only, for example 12), or apply the agent-build label to the issue. ' +
+                'Re-running this run reuses its inputs.'
+              );
             }
-            if (process.env.COPILOT_TOKEN_PRESENT !== 'true' || process.env.PUBLICATION_TOKEN_PRESENT !== 'true') {
-              core.setFailed('Configure COPILOT_GITHUB_TOKEN for inference and GH_AW_GITHUB_TOKEN for pull request publication before running Feature Builder.');
+            const missingSecrets = [
+              ['COPILOT_GITHUB_TOKEN', 'inference', process.env.COPILOT_TOKEN_PRESENT],
+              ['GH_AW_GITHUB_TOKEN', 'pull request publication', process.env.PUBLICATION_TOKEN_PRESENT]
+            ].filter(([, , present]) => present !== 'true').map(([name, purpose]) => `${name} for ${purpose}`);
+            if (missingSecrets.length > 0) {
+              core.setFailed(
+                `Configure the repository Actions secret${missingSecrets.length > 1 ? 's' : ''} ${missingSecrets.join(' and ')} ` +
+                '(Settings > Secrets and variables > Actions) before running Feature Builder.'
+              );
             }
+      # action-tag skips gh-aw's automatic activation checkout, but runtime imports still need the source.
+      - name: Checkout workflow source for runtime imports
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: .github/workflows
+          persist-credentials: false
+          token: ${{ secrets.GITHUB_TOKEN }}
 tools:
   edit:
   github:
