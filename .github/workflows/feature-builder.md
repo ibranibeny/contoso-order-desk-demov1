@@ -34,6 +34,15 @@ concurrency:
   job-discriminator: ${{ github.event.issue.number || inputs.item_number }}
 jobs:
   activation:
+    # action-tag skips gh-aw's automatic activation checkout, but runtime imports still need the source.
+    pre-steps:
+      - name: Checkout workflow source for runtime imports
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: .github/workflows
+          persist-credentials: false
+          token: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Validate issue number and required secrets
         uses: actions/github-script@v9
