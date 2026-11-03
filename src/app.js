@@ -13,3 +13,18 @@ app.use(express.static(publicDir));
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', orders: orders.length });
 });
+
+const ORDER_ID = /^ORD-\d{6}$/;
+
+app.get('/api/orders/:orderId', (req, res) => {
+  const { orderId } = req.params;
+  if (!ORDER_ID.test(orderId)) {
+    return res.status(400).json({ error: 'Order numbers look like ORD-123456' });
+  }
+  const order = orders.find((o) => o.id === orderId);
+  if (!order) {
+    return res.status(404).json({ error: 'Order not found' });
+  }
+  const { id, status, lastUpdated, estimatedDelivery } = order;
+  res.json({ id, status, lastUpdated, estimatedDelivery });
+});
