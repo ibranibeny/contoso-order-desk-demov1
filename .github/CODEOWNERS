@@ -1,0 +1,5 @@
+# Code owners for Contoso Order Desk.
+# scripts/github-setup.sh rewrites this file in each demo repository: you (one account), the approver, or a team.
+*                     @ibranibeny
+/.github/             @ibranibeny
+/.github/CODEOWNERS   @ibranibeny
