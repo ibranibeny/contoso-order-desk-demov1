@@ -93,6 +93,12 @@ Secret scanning alerts need the optional repository secret `SECRET_SCANNING_TOKE
 
 [`.github/workflows/daily-activity-report.md`](.github/workflows/daily-activity-report.md) runs every day at 01:16 UTC (08:16 in UTC+7). A setup step collects the last 24 hours of commits on main, pull requests, issues, releases and workflow runs, and Copilot posts a summary as an issue labelled `report` (`[daily-activity] Repository activity for …`). A quiet day posts nothing, each new report closes the previous one, and reports close themselves after 7 days (the generated `agentics-maintenance.yml` does that). `scripts/preflight.sh` ignores open reports; `scripts/reset-demo.sh` closes them.
 
+### Feature Builder activation troubleshooting
+
+Feature Builder imports [its workflow source](.github/workflows/feature-builder.md) while rendering the prompt. Its activation checkout must stay in `jobs.activation.pre-steps`, before prompt interpolation; `jobs.activation.steps` runs too late. Keep the generated `.lock.yml` in sync with `gh aw compile feature-builder`.
+
+If an older run failed with `Runtime import file not found`, use **Actions → Feature Builder → Run workflow** on `main` after the checkout fix is merged, and supply the feature issue's `item_number`. **Re-run jobs** uses the original run's commit, so it does not pick up a newly merged workflow fix.
+
 ## What's inside
 
 ```text
